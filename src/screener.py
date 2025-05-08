@@ -10,7 +10,7 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 import requests
 from nsepy import get_history
-from nsepy.history import get_price_series
+# from nsepy.history import get_price_series  # Removed problematic import
 
 from .data_fetcher import DataCache  # Import the DataCache class
 from .analysis import (
@@ -105,15 +105,15 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
         if nsepy_interval == "D":
             df_nse = get_history(symbol=nse_symbol, start=start_date, end=end_date)
         elif nsepy_interval == "W":
-            df_nse = get_price_series(symbol=nse_symbol, start=start_date, end=end_date)
+            df_nse = get_history(symbol=nse_symbol, start=start_date, end=end_date, index=True) # Added index=True
             if not df_nse.empty:
-                df_nse = df_nse.resample('W').agg({'OPEN': 'first', 'HIGH': 'max', 'LOW': 'min', 'CLOSE': 'last', 'VOLUME': 'sum'})
+                df_nse = df_nse.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
                 df_nse.index = df_nse.index.date
         else:
             df_nse = pd.DataFrame()
 
         if not df_nse.empty:
-            df_nse.rename(columns={'OPEN': 'Open', 'HIGH': 'High', 'LOW': 'Low', 'CLOSE': 'Close', 'VOLUME': 'Volume'}, inplace=True)
+            # df_nse.rename(columns={'OPEN': 'Open', 'HIGH': 'High', 'LOW': 'Low', 'CLOSE': 'Close', 'VOLUME': 'Volume'}, inplace=True) # Removed
             df_nse.index = pd.to_datetime(df_nse.index)  # Ensure datetime for consistency
             df_nse.index = df_nse.index.tz_localize(None)
             DataCache.save_stock_data(symbol, interval, df_nse, start_date, end_date)
