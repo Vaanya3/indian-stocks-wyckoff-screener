@@ -4,11 +4,11 @@ Main screener module for identifying Stage 1 to Stage 2 breakouts.
 import os
 import logging
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from tqdm import tqdm
+import yfinance as yf
 
 from .data_fetcher import DataCache  # Import the DataCache class
-# from .data_fetcher import get_stock_data # Remove the direct import
 from .analysis import (
     add_technical_indicators,
     identify_resistance_level,
@@ -23,33 +23,132 @@ from .telegram_alerts import send_breakout_alert
 from .utils import setup_directories, save_results, format_summary, clean_old_charts
 from .config import (
     TOP_SECTOR_PERCENTILE,
-    INDIAN_TIMEZONE
+    INDIAN_TIMEZONE,
+    NIFTY_500_SYMBOLS,
+    CUSTOM_SYMBOLS,
+    DATA_LOOKBACK_DAYS,
+    WEEKLY_LOOKBACK_PERIODS,
+    SECTOR_INDICES,
+    EXCLUDED_SYMBOLS
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
-def fetch_all_data():
-    """
-    Placeholder function to fetch all required data (stock data, sector data, mapping).
-    You need to implement the actual logic here using DataCache or other methods.
-    """
-    logger.warning("fetch_all_data in screener.py is a placeholder. Implement your data fetching logic.")
-    # Example of how you might use DataCache (you'll need to adapt this):
-    # symbol = "RELIANCE.NS"
-    # today = datetime.now()
-    # start_date = today - timedelta(days=365)
-    # daily_data = DataCache.get_stock_data(symbol, 'daily', start_date, today)
-    # ... similarly for other data
+def get_nifty_500_symbols_yf():
+    """Fetches the list of Nifty 500 symbols from Yahoo Finance."""
+    nifty_500_url = "https://en.wikipedia.org/wiki/NIFTY_500"
+    try:
+        html = pd.read_html(nifty_500_url, attrs={'id': 'constituents'})
+        if html:
+            df = html[0]
+            # Assuming the symbol column is named 'Symbol' and has '.NS' suffix
+            symbols = [f"{s}.NS" for s in df['Symbol'].tolist()]
+            return [s for s in symbols if s not in EXCLUDED_SYMBOLS]
+        else:
+            logger.error("Could not find Nifty 500 constituents table on Wikipedia.")
+            return []
+    except Exception as e:
+        logger.error(f"Error fetching Nifty 500 symbols: {e}")
+        return []
 
-    # Replace this with your actual data fetching and mapping logic
+def fetch_historical_data(symbol, period="1y", interval="1d"):
+    """Fetches historical data for a given symbol using yfinance and caches it."""
+    today = datetime.now()
+    start_date = today - timedelta(days=DATA_LOOKBACK_DAYS)
+    end_date = today
+
+    cached_data = DataCache.get_stock_data(symbol, interval, start_date, end_date)
+    if cached_data is not None:
+        logger.info(f"Using cached {interval} data for {symbol}")
+        return cached_data
+
+    try:
+        ticker = yf.Ticker(symbol)
+        df = ticker.history(period=period, interval=interval)
+        if not df.empty:
+            df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+            df.index = df.index.tz_localize(None) # Remove timezone info for consistency
+            DataCache.save_stock_data(symbol, interval, df, start_date, end_date)
+            logger.info(f"Fetched {interval} data for {symbol} from yfinance")
+            return df
+        else:
+            logger.warning(f"No {interval} data found for {symbol} on yfinance.")
+            return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error fetching {interval} data for {symbol} from yfinance: {e}")
+        return pd.DataFrame()
+
+def fetch_sector_index_data(sector_index, period="1y"):
+    """Fetches historical data for a sector index using yfinance and caches it."""
+    today = datetime.now()
+    start_date = today - timedelta(days=DATA_LOOKBACK_DAYS)
+    end_date = today
+
+    cached_data = DataCache.get_sector_data(sector_index)
+    if cached_data is not None:
+        logger.info(f"Using cached data for {sector_index}")
+        return cached_data
+
+    try:
+        ticker = yf.Ticker(f"{sector_index}.NS") # Assuming NSE indices have .NS suffix
+        df = ticker.history(period=period, interval="1wk") # Using weekly for sector performance
+        if not df.empty:
+            df = df[['Close']]
+            df.index = df.index.tz_localize(None)
+            DataCache.save_sector_data(sector_index, df)
+            logger.info(f"Fetched data for {sector_index} from yfinance")
+            return df
+        else:
+            logger.warning(f"No data found for {sector_index} on yfinance.")
+            return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Error fetching data for {sector_index} from yfinance: {e}")
+        return pd.DataFrame()
+
+def fetch_all_data():
+    """Fetches stock data, sector data, and creates the sector mapping."""
+    logger.info("Fetching all required data...")
+    all_symbols = []
+
+    if NIFTY_500_SYMBOLS:
+        nifty_500_symbols = get_nifty_500_symbols_yf()
+        all_symbols.extend(nifty_500_symbols)
+
+    all_symbols.extend(CUSTOM_SYMBOLS)
+    all_symbols = list(set(all_symbols)) # Remove duplicates
+    all_symbols = [s for s in all_symbols if s not in EXCLUDED_SYMBOLS]
+
     stock_data = {}
+    for symbol in tqdm(all_symbols, desc="Fetching stock data"):
+        daily_data = fetch_historical_data(symbol, period=f"{DATA_LOOKBACK_DAYS}d", interval="1d")
+        weekly_data = fetch_historical_data(symbol, period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d", interval="1wk") # Adjust period for weekly
+        if not daily_data.empty and not weekly_data.empty:
+            stock_data[symbol] = {'daily': daily_data, 'weekly': weekly_data}
+
     sector_data = {}
+    for sector_index in tqdm(SECTOR_INDICES.keys(), desc="Fetching sector data"):
+        sector_df = fetch_sector_index_data(sector_index, period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d")
+        if not sector_df.empty:
+            sector_data[sector_index] = sector_df
+
     sector_mapping_func = lambda symbol: None
+    # You will need a way to map symbols to sectors.
+    # This example provides a basic mapping based on the SECTOR_INDICES keys.
+    # You might need a more sophisticated mapping based on external data.
+    symbol_to_sector = {}
+    # This is a very basic and likely incorrect mapping.
+    # You'll need to implement a proper mapping based on your data source.
+    for symbol in stock_data.keys():
+        for index_name, sector_name in SECTOR_INDICES.items():
+            if index_name.lower() in symbol.lower(): # Very basic check
+                symbol_to_sector[symbol] = sector_name
+                break
+        if symbol not in symbol_to_sector:
+            logger.warning(f"Could not determine sector for {symbol}")
+
+    sector_mapping_func = symbol_to_sector.get
+
+    logger.info(f"Fetched data for {len(stock_data)} stocks and {len(sector_data)} sectors.")
     return stock_data, sector_data, sector_mapping_func
 
 def run_screen():
