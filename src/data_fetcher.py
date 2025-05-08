@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 import time
 from tqdm import tqdm
 import logging
+import random
+from requests.exceptions import ConnectionError, ReadTimeout
 from .config import (
     DATA_LOOKBACK_DAYS, 
     NIFTY_500_SYMBOLS, 
@@ -69,37 +71,53 @@ def get_sector_indices_data():
     sector_data = {}
     
     for index_name in tqdm(SECTOR_INDICES.keys(), desc="Fetching sector indices"):
-        try:
-            # Remove NIFTY prefix for NSE data fetch
-            nse_index_name = index_name.replace("NIFTY ", "")
-            
-            # Fetch data using NSEpy
-            df = get_history(
-                symbol=nse_index_name,
-                start=start_date.date(),
-                end=end_date.date(),
-                index=True
-            )
-            
-            if df.empty:
-                logger.warning(f"No data found for {index_name}")
-                continue
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Remove NIFTY prefix for NSE data fetch
+                nse_index_name = index_name.replace("NIFTY ", "")
                 
-            # Resample to weekly data
-            weekly_data = df.resample('W', on='Date').agg({
-                'Open': 'first',
-                'High': 'max',
-                'Low': 'min',
-                'Close': 'last',
-                'Volume': 'sum'
-            })
+                # Fetch data using NSEpy
+                df = get_history(
+                    symbol=nse_index_name,
+                    start=start_date.date(),
+                    end=end_date.date(),
+                    index=True
+                )
+                
+                if df.empty:
+                    logger.warning(f"No data found for {index_name}")
+                    continue
+                    
+                # Resample to weekly data
+                weekly_data = df.resample('W', on='Date').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last',
+                    'Volume': 'sum'
+                })
+                
+                weekly_data.reset_index(inplace=True)
+                sector_data[index_name] = weekly_data
+                break  # Success, exit retry loop
+                
+            except (ConnectionError, ReadTimeout) as e:
+                # Network-related errors, worth retrying
+                logger.warning(f"Attempt {attempt+1}/{max_retries} - Network error for {index_name}: {e}")
+                if attempt < max_retries - 1:
+                    # Add exponential backoff
+                    wait_time = (2 ** attempt) + random.uniform(0, 1)
+                    logger.info(f"Retrying after {wait_time:.2f} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    logger.error(f"Failed to fetch data for {index_name} after {max_retries} attempts")
             
-            weekly_data.reset_index(inplace=True)
-            sector_data[index_name] = weekly_data
-            
-        except Exception as e:
-            logger.error(f"Error fetching data for {index_name}: {e}")
-            
+            except Exception as e:
+                # Other errors, log but don't retry
+                logger.error(f"Error fetching data for {index_name}: {e}")
+                break
+                
         # Add a small delay to avoid overwhelming the API
         time.sleep(0.5)
     
@@ -107,7 +125,7 @@ def get_sector_indices_data():
 
 def fetch_stock_data(symbols):
     """
-    Fetch historical stock data for the given symbols.
+    Fetch historical stock data for the given symbols with improved error handling.
     
     Args:
         symbols (list): List of stock symbols
@@ -121,52 +139,154 @@ def fetch_stock_data(symbols):
     stock_data = {}
     failed_symbols = []
     
-    for symbol in tqdm(symbols, desc="Fetching stock data"):
-        try:
+    # Process symbols in batches to avoid overwhelming the API
+    batch_size = 50
+    symbol_batches = [symbols[i:i+batch_size] for i in range(0, len(symbols), batch_size)]
+    
+    for batch in tqdm(symbol_batches, desc="Processing symbol batches"):
+        for symbol in tqdm(batch, desc="Fetching stock data", leave=False):
             # Skip excluded symbols
             if symbol.replace(".NS", "") in EXCLUDED_SYMBOLS:
                 continue
                 
-            # Yahoo Finance fetch for daily data
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(start=start_date, end=end_date, interval="1d")
+            # Try with retries and different symbol formats
+            max_retries = 3
+            success = False
             
-            if df.empty:
-                failed_symbols.append(symbol)
-                continue
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        # Add exponential backoff with jitter
+                        wait_time = (2 ** attempt) + random.uniform(0, 1)
+                        time.sleep(wait_time)
+                    
+                    # Yahoo Finance fetch for daily data
+                    ticker = yf.Ticker(symbol)
+                    
+                    # Use download instead of history for better reliability
+                    df = yf.download(
+                        symbol, 
+                        start=start_date,
+                        end=end_date,
+                        progress=False,
+                        show_errors=False,
+                        timeout=10
+                    )
+                    
+                    # If empty and not the last attempt, continue to next attempt
+                    if df.empty and attempt < max_retries - 1:
+                        continue
+                    
+                    # If empty on final attempt, mark as failed
+                    if df.empty:
+                        logger.warning(f"{symbol}: Returned empty dataset")
+                        failed_symbols.append(symbol)
+                        break
+                    
+                    # Validate data structure
+                    required_columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+                    if not all(col in df.columns for col in required_columns):
+                        logger.warning(f"{symbol}: Missing required columns")
+                        if attempt < max_retries - 1:
+                            continue
+                        else:
+                            failed_symbols.append(symbol)
+                            break
+                    
+                    # Add symbol column
+                    df['Symbol'] = symbol
+                    
+                    # Compute weekly data for analysis
+                    weekly_data = df.resample('W').agg({
+                        'Open': 'first',
+                        'High': 'max',
+                        'Low': 'min',
+                        'Close': 'last',
+                        'Volume': 'sum'
+                    })
+                    
+                    weekly_data.reset_index(inplace=True)
+                    weekly_data['Symbol'] = symbol
+                    
+                    # Store both daily and weekly data
+                    stock_data[symbol] = {
+                        'daily': df.reset_index(),
+                        'weekly': weekly_data
+                    }
+                    
+                    success = True
+                    break  # Successfully fetched data, exit retry loop
+                    
+                except (ConnectionError, ReadTimeout) as e:
+                    # Network errors, worth retrying
+                    logger.warning(f"Attempt {attempt+1}/{max_retries} - Network error for {symbol}: {e}")
                 
-            # Add symbol column
-            df['Symbol'] = symbol
+                except Exception as e:
+                    # Log the error
+                    logger.error(f"Error fetching data for {symbol}: {e}")
+                    
+                    # If we're on the last attempt and still failed
+                    if attempt == max_retries - 1:
+                        failed_symbols.append(symbol)
             
-            # Compute weekly data for analysis
-            weekly_data = df.resample('W').agg({
-                'Open': 'first',
-                'High': 'max',
-                'Low': 'min',
-                'Close': 'last',
-                'Volume': 'sum'
-            })
+            # If the normal symbol failed, try an alternative format
+            if not success and '.NS' in symbol:
+                alt_symbol = symbol.replace('.NS', '')
+                logger.info(f"Trying alternative symbol format: {alt_symbol}")
+                
+                try:
+                    # Try with the alternative symbol
+                    ticker = yf.Ticker(alt_symbol)
+                    df = yf.download(
+                        alt_symbol, 
+                        start=start_date,
+                        end=end_date,
+                        progress=False,
+                        show_errors=False
+                    )
+                    
+                    if not df.empty:
+                        # Add symbol column - use the original symbol for consistency
+                        df['Symbol'] = symbol  # Use original symbol for consistency in the data
+                        
+                        # Compute weekly data
+                        weekly_data = df.resample('W').agg({
+                            'Open': 'first',
+                            'High': 'max',
+                            'Low': 'min',
+                            'Close': 'last',
+                            'Volume': 'sum'
+                        })
+                        
+                        weekly_data.reset_index(inplace=True)
+                        weekly_data['Symbol'] = symbol
+                        
+                        # Store both daily and weekly data
+                        stock_data[symbol] = {
+                            'daily': df.reset_index(),
+                            'weekly': weekly_data
+                        }
+                        
+                        # Remove from failed symbols if it was there
+                        if symbol in failed_symbols:
+                            failed_symbols.remove(symbol)
+                            
+                        logger.info(f"Successfully fetched {alt_symbol} as alternative for {symbol}")
+                    
+                except Exception as e:
+                    logger.error(f"Alternative symbol {alt_symbol} also failed: {e}")
             
-            weekly_data.reset_index(inplace=True)
-            weekly_data['Symbol'] = symbol
-            
-            # Store both daily and weekly data
-            stock_data[symbol] = {
-                'daily': df.reset_index(),
-                'weekly': weekly_data
-            }
-            
-        except Exception as e:
-            logger.error(f"Error fetching data for {symbol}: {e}")
-            failed_symbols.append(symbol)
-            
-        # Add a small delay to avoid rate limiting
-        time.sleep(0.2)
+            # Add a small random delay to avoid rate limiting
+            time.sleep(0.2 + random.uniform(0, 0.3))
+        
+        # Add a larger delay between batches
+        time.sleep(1 + random.uniform(0, 1))
     
     if failed_symbols:
-        logger.warning(f"Failed to fetch data for {len(failed_symbols)} symbols")
+        logger.warning(f"Failed to fetch data for {len(failed_symbols)}/{len(symbols)} symbols")
+        logger.debug(f"Failed symbols: {', '.join(failed_symbols)}")
         
-    logger.info(f"Successfully fetched data for {len(stock_data)} stocks")
+    logger.info(f"Successfully fetched data for {len(stock_data)}/{len(symbols)} stocks")
     return stock_data
 
 def get_symbol_to_sector_mapping():
