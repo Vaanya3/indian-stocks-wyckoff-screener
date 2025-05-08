@@ -82,7 +82,7 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
     Fetches historical data for a given symbol using nsepy (primary) and yfinance (fallback),
     and caches it.
     """
-    today = datetime.now().date()
+    today = datetime.now()
     start_date = (today - timedelta(days=DATA_LOOKBACK_DAYS)).date()
     end_date = today
 
@@ -235,7 +235,7 @@ def fetch_all_data():
     sector_mapping_func = symbol_to_sector.get
 
     logger.info(f"Fetched data for {len(stock_data)} stocks and {len(sector_data)} sectors.")
-    return stock_data, sector_data, sector_mapping_func
+    return stock_data, sector_data, sector_mapping
 
 def run_screen():
     """
@@ -348,4 +348,3 @@ def run_screen():
 
 if __name__ == "__main__":
     run_screen()
-
