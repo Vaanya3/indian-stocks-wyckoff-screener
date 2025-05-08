@@ -351,3 +351,18 @@ async def _fetch_with_retry_impl(url: str, headers: Dict, timeout: int,
     backoff_factor = 0.1
     for attempt in range(max_retries + 1):
         try:
+            async with session.get(url, headers=headers, timeout=timeout) as response:
+                response.raise_for_status()  # Raise an exception for bad status codes
+                return await response.text()
+        except (ConnectionError, ReadTimeout, aiohttp.ClientError) as e:
+            if attempt < max_retries:
+                delay = (backoff_factor * (2 ** attempt) + random.random())
+                logger.warning(f"Attempt {attempt + 1} failed for {url} with error: {e}. Retrying in {delay:.2f} seconds...")
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Max retries reached for {url}. Final error: {e}")
+                return None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during fetching {url}: {e}")
+            return None
+    return None
