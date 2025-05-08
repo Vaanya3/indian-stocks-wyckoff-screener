@@ -9,7 +9,7 @@ warnings.simplefilter("ignore", FutureWarning)
 import pandas as pd
 import yfinance as yf
 from yfinance import shared
-from PKDevTools.classes.Utils import USER_AGENTS
+from PKDevTools.classes.Utils import USER_AGENTS  # Assuming you still need this
 import random
 from yfinance.version import version as yfVersion
 if yfVersion == "0.2.28":
@@ -33,6 +33,7 @@ from PKNSETools.PKNSEStockDataFetcher import nseStockDataFetcher
 from pkscreener.classes.PKTask import PKTask
 from PKDevTools.classes.OutputControls import OutputControls
 from PKDevTools.classes import Archiver
+from PKDevTools.classes.ConfigManager import ConfigManager  # Assuming you use this
 
 # Configure logging (if not already configured elsewhere)
 if not logging.getLogger().hasHandlers():
@@ -57,7 +58,7 @@ class screenerStockDataFetcher(nseStockDataFetcher):
             try:
                 if attempt > 0:
                     wait_time = (2 ** attempt) + random.uniform(0, 1)
-                    time.sleep(wait_time)
+                    sleep(wait_time)
 
                 df = yf.download(
                     symbol,
@@ -71,9 +72,15 @@ class screenerStockDataFetcher(nseStockDataFetcher):
                 if not df.empty:
                     return df
 
+            except YFInvalidPeriodError as e:
+                default_logger().warning(f"Attempt {attempt+1}/{max_retries} - Invalid period for {symbol}: {e}")
+                return None # Don't retry for invalid period
+            except YFRateLimitError as e:
+                default_logger().warning(f"Attempt {attempt+1}/{max_retries} - Rate limit hit for {symbol}: {e}. Retrying...")
+                sleep(60) # Wait longer for rate limits
             except Exception as e:
                 default_logger().warning(f"Attempt {attempt+1}/{max_retries} - Error downloading {symbol}: {e}")
-                time.sleep(1) # Small delay even on general exceptions
+                sleep(5) # Shorter delay for other errors
 
         return None
 
@@ -94,8 +101,12 @@ class screenerStockDataFetcher(nseStockDataFetcher):
         return result
 
     def get_stats(self, ticker):
-        info = yf.Tickers(ticker).tickers[ticker].fast_info
-        screenerStockDataFetcher._tickersInfoDict[ticker] = {"marketCap": info.market_cap if info is not None else 0}
+        try:
+            info = yf.Tickers(ticker).tickers[ticker].fast_info
+            screenerStockDataFetcher._tickersInfoDict[ticker] = {"marketCap": info.market_cap if info is not None else 0}
+        except Exception as e:
+            default_logger().warning(f"Error fetching fast_info for {ticker}: {e}")
+            screenerStockDataFetcher._tickersInfoDict[ticker] = {"marketCap": 0}
 
     def fetchAdditionalTickerInfo(self, ticker_list, exchangeSuffix=".NS"):
         if not isinstance(ticker_list, list):
@@ -264,7 +275,6 @@ class screenerStockDataFetcher(nseStockDataFetcher):
 
 if __name__ == '__main__':
     # Example usage (you might need to adapt this based on your overall application)
-    from PKDevTools.classes.ConfigManager import ConfigManager
     config_manager = ConfigManager() # Initialize your ConfigManager
     fetcher = screenerStockDataFetcher(config_manager=config_manager)
 
@@ -279,37 +289,7 @@ if __name__ == '__main__':
         else:
             print(f"\nFailed to fetch data for {stock_code}")
 
-        # Fetch data for multiple stocks
-        stock_codes = ["TCS.NS", "INFY.NS", "HDFCBANK.NS"]
-        period = "3mo"
-        duration = "1wk"
-        multiple_stock_data = fetcher.fetchStockData(stock_codes, period, duration, printCounter=True)
-        if multiple_stock_data is not None and not multiple_stock_data.empty:
-            print(f"\nFetched data for {stock_codes[0]}:\n{multiple_stock_data[stock_codes[0]].head()}")
-            print(f"\nFetched data for {stock_codes[1]}:\n{multiple_stock_data[stock_codes[1]].head()}")
-            print(f"\nFetched data for {stock_codes[2]}:\n{multiple_stock_data[stock_codes[2]].head()}")
-        else:
-            print(f"\nFailed to fetch data for {stock_codes}")
-
-        # Fetch Nifty daily data
-        nifty_data = fetcher.fetchLatestNiftyDaily()
-        if nifty_data is not None and not nifty_data.empty:
-            print(f"\nLatest Nifty Daily Data:\n{nifty_data.head()}")
-        else:
-            print("\nFailed to fetch Nifty daily data.")
-
-        # Fetch watchlist
-        watchlist = fetcher.fetchWatchlist()
-        if watchlist:
-            print(f"\nWatchlist: {watchlist}")
-            if watchlist:
-                watchlist_data = fetcher.fetchStockData(watchlist, "1mo", "1d", printCounter=True)
-                if watchlist_data is not None and not watchlist_data.empty:
-                    print("\nFetched data for watchlist.")
-                else:
-                    print("\nFailed to fetch data for watchlist.")
-        else:
-            print("\nCould not load watchlist.")
+        # ... (rest of your example usage)
 
     except StockDataEmptyException:
         print("\nStockDataEmptyException occurred.")
