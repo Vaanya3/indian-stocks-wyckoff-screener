@@ -83,8 +83,8 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
     and caches it.
     """
     today = datetime.now()
-    start_date = (today - timedelta(days=DATA_LOOKBACK_DAYS)).date()
-    end_date = today
+    start_date = (today - timedelta(days=DATA_LOOKBACK_DAYS)).date() # Corrected line
+    end_date = today.date() # Added to make end_date a date object
 
     # Determine the appropriate interval for nsepy
     if interval == "1d":
@@ -168,7 +168,7 @@ def fetch_sector_index_data(sector_index, period="1y"):
     """Fetches historical data for a sector index using yfinance and caches it."""
     today = datetime.now()
     start_date = today - timedelta(days=DATA_LOOKBACK_DAYS)
-    end_date = today
+    end_date = today.date() # Added to make end_date a date object
 
     cached_data = DataCache.get_sector_data(sector_index)
     if cached_data is not None:
