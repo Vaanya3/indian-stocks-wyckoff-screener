@@ -7,6 +7,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from tqdm import tqdm
 import yfinance as yf
+from bs4 import BeautifulSoup
+import requests
 
 from .data_fetcher import DataCache  # Import the DataCache class
 from .analysis import (
@@ -38,17 +40,27 @@ def get_nifty_500_symbols_yf():
     """Fetches the list of Nifty 500 symbols from Yahoo Finance."""
     nifty_500_url = "https://en.wikipedia.org/wiki/NIFTY_500"
     try:
-        html = pd.read_html(nifty_500_url, attrs={'id': 'constituents'})
-        if html:
-            df = html[0]
-            # Assuming the symbol column is named 'Symbol' and has '.NS' suffix
-            symbols = [f"{s}.NS" for s in df['Symbol'].tolist()]
-            return [s for s in symbols if s not in EXCLUDED_SYMBOLS]
+        response = requests.get(nifty_500_url)
+        response.raise_for_status()  # Raise an exception for bad status codes
+        soup = BeautifulSoup(response.content, 'lxml')
+        table = soup.find('table', {'id': 'constituents'})
+        if table:
+            symbols = []
+            for row in table.find_all('tr')[1:]:  # Skip the header row
+                columns = row.find_all('td')
+                if columns:
+                    symbol = columns[0].text.strip() + ".NS"
+                    if symbol not in EXCLUDED_SYMBOLS:
+                        symbols.append(symbol)
+            return symbols
         else:
             logger.error("Could not find Nifty 500 constituents table on Wikipedia.")
             return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching Nifty 500 symbols from Wikipedia: {e}")
+        return []
     except Exception as e:
-        logger.error(f"Error fetching Nifty 500 symbols: {e}")
+        logger.error(f"Error parsing Nifty 500 symbols from Wikipedia: {e}")
         return []
 
 def fetch_historical_data(symbol, period="1y", interval="1d"):
@@ -90,7 +102,7 @@ def fetch_sector_index_data(sector_index, period="1y"):
         return cached_data
 
     try:
-        ticker = yf.Ticker(f"{sector_index}.NS") # Assuming NSE indices have .NS suffix
+        ticker = yf.Ticker(f"^{sector_index}.NS") # Using ^ for Yahoo Finance index tickers
         df = ticker.history(period=period, interval="1wk") # Using weekly for sector performance
         if not df.empty:
             df = df[['Close']]
@@ -126,24 +138,31 @@ def fetch_all_data():
             stock_data[symbol] = {'daily': daily_data, 'weekly': weekly_data}
 
     sector_data = {}
-    for sector_index in tqdm(SECTOR_INDICES.keys(), desc="Fetching sector data"):
-        sector_df = fetch_sector_index_data(sector_index, period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d")
+    for sector_index_name_config, sector_name_mapped in tqdm(SECTOR_INDICES.items(), desc="Fetching sector data"):
+        sector_df = fetch_sector_index_data(sector_index_name_config, period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d")
         if not sector_df.empty:
-            sector_data[sector_index] = sector_df
+            sector_data[sector_index_name_config] = sector_df
 
     sector_mapping_func = lambda symbol: None
-    # You will need a way to map symbols to sectors.
-    # This example provides a basic mapping based on the SECTOR_INDICES keys.
-    # You might need a more sophisticated mapping based on external data.
+    # You will need a more robust way to map symbols to sectors.
+    # Consider using a CSV file, a dictionary, or an API for this mapping.
+    # The following is a very basic example and might not be accurate.
     symbol_to_sector = {}
-    # This is a very basic and likely incorrect mapping.
-    # You'll need to implement a proper mapping based on your data source.
+    # Replace this with your actual symbol-to-sector mapping logic
+    # Example (you'll need to adapt this based on your data source):
+    # try:
+    #     sector_df = pd.read_csv('sector_mapping.csv') # Assuming a CSV with 'Symbol' and 'Sector' columns
+    #     symbol_to_sector = pd.Series(sector_df['Sector'].values, index=sector_df['Symbol']).to_dict()
+    # except FileNotFoundError:
+    #     logger.warning("sector_mapping.csv not found. Sector mapping will be basic.")
     for symbol in stock_data.keys():
+        found_sector = False
         for index_name, sector_name in SECTOR_INDICES.items():
-            if index_name.lower() in symbol.lower(): # Very basic check
+            if any(part.lower() in symbol.lower() for part in index_name.split()):
                 symbol_to_sector[symbol] = sector_name
+                found_sector = True
                 break
-        if symbol not in symbol_to_sector:
+        if not found_sector:
             logger.warning(f"Could not determine sector for {symbol}")
 
     sector_mapping_func = symbol_to_sector.get
@@ -184,6 +203,10 @@ def run_screen():
         try:
             # Get sector for this stock
             sector = sector_mapping(symbol)
+
+            if sector is None:
+                logger.warning(f"Skipping {symbol} as its sector could not be determined.")
+                continue
 
             # Skip if sector is not in top percentile
             sector_indices = [s for s in sector_ranks.keys() if sector in sector_data[s]]
