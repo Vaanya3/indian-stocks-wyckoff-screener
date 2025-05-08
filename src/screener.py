@@ -37,24 +37,36 @@ from .config import (
 logger = logging.getLogger(__name__)
 
 def get_nifty_500_symbols_yf():
-    """Fetches the list of Nifty 500 symbols from Yahoo Finance."""
+    """Fetches the list of Nifty 500 symbols from Wikipedia using BeautifulSoup."""
     nifty_500_url = "https://en.wikipedia.org/wiki/NIFTY_500"
     try:
         response = requests.get(nifty_500_url)
         response.raise_for_status()  # Raise an exception for bad status codes
         soup = BeautifulSoup(response.content, 'lxml')
-        table = soup.find('table', {'id': 'constituents'})
-        if table:
+        tables = soup.find_all('table')
+        nifty_500_table = None
+        for table in tables:
+            if 'constituents' in str(table.get('class')):
+                nifty_500_table = table
+                break
+            elif 'wikitable' in str(table.get('class')) and 'sortable' in str(table.get('class')):
+                header_row = table.find('tr')
+                if header_row and 'Symbol' in header_row.text:
+                    nifty_500_table = table
+                    break
+
+        if nifty_500_table:
             symbols = []
-            for row in table.find_all('tr')[1:]:  # Skip the header row
+            for row in nifty_500_table.find_all('tr')[1:]:  # Skip the header row
                 columns = row.find_all('td')
                 if columns:
-                    symbol = columns[0].text.strip() + ".NS"
+                    symbol = columns[0].text.strip()
+                    symbol = symbol.replace(':', '').upper() + ".NS"
                     if symbol not in EXCLUDED_SYMBOLS:
                         symbols.append(symbol)
             return symbols
         else:
-            logger.error("Could not find Nifty 500 constituents table on Wikipedia.")
+            logger.error("Could not find the Nifty 500 constituents table on Wikipedia using multiple checks.")
             return []
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching Nifty 500 symbols from Wikipedia: {e}")
@@ -144,17 +156,9 @@ def fetch_all_data():
             sector_data[sector_index_name_config] = sector_df
 
     sector_mapping_func = lambda symbol: None
-    # You will need a more robust way to map symbols to sectors.
-    # Consider using a CSV file, a dictionary, or an API for this mapping.
-    # The following is a very basic example and might not be accurate.
+    # **IMPORTANT: Implement your accurate symbol-to-sector mapping here.**
+    # The following is a basic example and likely needs to be replaced.
     symbol_to_sector = {}
-    # Replace this with your actual symbol-to-sector mapping logic
-    # Example (you'll need to adapt this based on your data source):
-    # try:
-    #     sector_df = pd.read_csv('sector_mapping.csv') # Assuming a CSV with 'Symbol' and 'Sector' columns
-    #     symbol_to_sector = pd.Series(sector_df['Sector'].values, index=sector_df['Symbol']).to_dict()
-    # except FileNotFoundError:
-    #     logger.warning("sector_mapping.csv not found. Sector mapping will be basic.")
     for symbol in stock_data.keys():
         found_sector = False
         for index_name, sector_name in SECTOR_INDICES.items():
