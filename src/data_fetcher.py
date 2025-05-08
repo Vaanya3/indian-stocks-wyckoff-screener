@@ -97,7 +97,7 @@ def init_db():
     """Initialize SQLite database for persistent caching"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    
+
     # Create tables if they don't exist
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS symbol_lists (
@@ -106,7 +106,7 @@ def init_db():
         timestamp TIMESTAMP
     )
     ''')
-    
+
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS stock_data (
         symbol TEXT,
@@ -118,7 +118,7 @@ def init_db():
         PRIMARY KEY (symbol, data_type, start_date, end_date)
     )
     ''')
-    
+
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS sector_data (
         sector_name TEXT PRIMARY KEY,
@@ -126,7 +126,7 @@ def init_db():
         timestamp TIMESTAMP
     )
     ''')
-    
+
     conn.commit()
     conn.close()
 
@@ -136,43 +136,43 @@ init_db()
 # Enhanced caching with SQLite backend
 class DataCache:
     """Enhanced caching system for stock data"""
-    
+
     @staticmethod
     def get_symbol_list(list_name: str, max_age_days: int = 7) -> Optional[List[str]]:
         """Get cached symbol list if it exists and is not too old"""
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         cursor.execute(
-            "SELECT symbols, timestamp FROM symbol_lists WHERE list_name = ?", 
+            "SELECT symbols, timestamp FROM symbol_lists WHERE list_name = ?",
             (list_name,)
         )
         result = cursor.fetchone()
         conn.close()
-        
+
         if result:
             symbols_json, timestamp_str = result
             timestamp = datetime.fromisoformat(timestamp_str)
             age = datetime.now() - timestamp
-            
+
             if age.days < max_age_days:
                 try:
                     return json.loads(symbols_json)
                 except json.JSONDecodeError:
                     logger.error(f"Error decoding cached symbols for {list_name}")
-        
+
         return None
-    
+
     @staticmethod
     def save_symbol_list(list_name: str, symbols: List[str]) -> None:
         """Save symbol list to cache"""
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         try:
             symbols_json = json.dumps(symbols)
             timestamp = datetime.now().isoformat()
-            
+
             cursor.execute(
                 "INSERT OR REPLACE INTO symbol_lists (list_name, symbols, timestamp) VALUES (?, ?, ?)",
                 (list_name, symbols_json, timestamp)
@@ -183,57 +183,57 @@ class DataCache:
             logger.error(f"Error caching symbols for {list_name}: {e}")
         finally:
             conn.close()
-    
+
     @staticmethod
     def get_stock_data(symbol: str, data_type: str, start_date: datetime, end_date: datetime) -> Optional[pd.DataFrame]:
         """Get cached stock data if available"""
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         start_str = start_date.strftime('%Y-%m-%d')
         end_str = end_date.strftime('%Y-%m-%d')
-        
+
         cursor.execute(
             "SELECT data, timestamp FROM stock_data WHERE symbol = ? AND data_type = ? AND start_date = ? AND end_date = ?",
             (symbol, data_type, start_str, end_str)
         )
         result = cursor.fetchone()
         conn.close()
-        
+
         if result:
             data_blob, timestamp_str = result
             timestamp = datetime.fromisoformat(timestamp_str)
             age = datetime.now() - timestamp
-            
+
             # Max age for cache: 1 day for daily data, 7 days for weekly data
             max_age = 1 if data_type == 'daily' else 7
-            
+
             if age.days < max_age:
                 try:
                     return pd.read_json(data_blob)
                 except Exception as e:
                     logger.error(f"Error decoding cached data for {symbol}: {e}")
-        
+
         return None
-    
+
     @staticmethod
     def save_stock_data(symbol: str, data_type: str, df: pd.DataFrame, start_date: datetime, end_date: datetime) -> None:
         """Save stock data to cache"""
         if df is None or df.empty:
             return
-            
+
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         try:
             data_json = df.to_json()
             timestamp = datetime.now().isoformat()
             start_str = start_date.strftime('%Y-%m-%d')
             end_str = end_date.strftime('%Y-%m-%d')
-            
+
             cursor.execute(
-                """INSERT OR REPLACE INTO stock_data 
-                    (symbol, data_type, start_date, end_date, data, timestamp) 
+                """INSERT OR REPLACE INTO stock_data
+                    (symbol, data_type, start_date, end_date, data, timestamp)
                     VALUES (?, ?, ?, ?, ?, ?)""",
                 (symbol, data_type, start_str, end_str, data_json, timestamp)
             )
@@ -242,46 +242,46 @@ class DataCache:
             logger.error(f"Error caching data for {symbol}: {e}")
         finally:
             conn.close()
-    
+
     @staticmethod
     def get_sector_data(sector_name: str, max_age_days: int = 7) -> Optional[pd.DataFrame]:
         """Get cached sector data if available"""
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         cursor.execute(
             "SELECT data, timestamp FROM sector_data WHERE sector_name = ?",
             (sector_name,)
         )
         result = cursor.fetchone()
         conn.close()
-        
+
         if result:
             data_blob, timestamp_str = result
             timestamp = datetime.fromisoformat(timestamp_str)
             age = datetime.now() - timestamp
-            
+
             if age.days < max_age_days:
                 try:
                     return pd.read_json(data_blob)
                 except Exception as e:
                     logger.error(f"Error decoding cached data for {sector_name}: {e}")
-        
+
         return None
-    
+
     @staticmethod
     def save_sector_data(sector_name: str, df: pd.DataFrame) -> None:
         """Save sector data to cache"""
         if df is None or df.empty:
             return
-            
+
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
-        
+
         try:
             data_json = df.to_json()
             timestamp = datetime.now().isoformat()
-            
+
             cursor.execute(
                 "INSERT OR REPLACE INTO sector_data (sector_name, data, timestamp) VALUES (?, ?, ?)",
                 (sector_name, data_json, timestamp)
@@ -330,14 +330,14 @@ NIFTY_FALLBACK_SYMBOLS = [
     # Add more symbols to complete the list
 ]
 
-async def fetch_with_retry(url: str, headers: Dict = None, timeout: int = 10, 
+async def fetch_with_retry(url: str, headers: Dict = None, timeout: int = 10,
                            max_retries: int = 3, session: aiohttp.ClientSession = None) -> Optional[str]:
     """
     Fetch URL content with retry logic, using aiohttp for async requests
     """
     if headers is None:
         headers = get_random_headers()
-    
+
     # Use provided session or create a new one
     if session is None:
         async with aiohttp.ClientSession() as session:
@@ -345,7 +345,9 @@ async def fetch_with_retry(url: str, headers: Dict = None, timeout: int = 10,
     else:
         return await _fetch_with_retry_impl(url, headers, timeout, max_retries, session)
 
-async def _fetch_with_retry_impl(url: str, headers: Dict, timeout: int, 
+async def _fetch_with_retry_impl(url: str, headers: Dict, timeout: int,
                                  max_retries: int, session: aiohttp.ClientSession) -> Optional[str]:
     """Implementation of fetch with retry logic"""
-    backoff_factor = 0.
+    backoff_factor = 0.1
+    for attempt in range(max_retries + 1):
+        try:
