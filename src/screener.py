@@ -83,8 +83,8 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
     and caches it.
     """
     today = datetime.now()
-    start_date = (today - timedelta(days=DATA_LOOKBACK_DAYS)).date() # Corrected line
-    end_date = today.date() # Added to make end_date a date object
+    start_date = (today - timedelta(days=DATA_LOOKBACK_DAYS)).date()
+    end_date = today.date()
 
     # Determine the appropriate interval for nsepy
     if interval == "1d":
@@ -103,18 +103,25 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
         logger.info(f"Fetching {interval} data for {symbol} from nsepy...")
         nse_symbol = symbol.split('.')[0]
         if nsepy_interval == "D":
-            df_nse = get_history(symbol=nse_symbol, start=start_date, end=end_date)
+            try:
+                df_nse = get_history(symbol=nse_symbol, start=start_date, end=end_date)
+            except Exception as e:
+                logger.error(f"Error fetching daily data from nsepy for {symbol}: {e}")
+                df_nse = pd.DataFrame()
         elif nsepy_interval == "W":
-            df_nse = get_history(symbol=nse_symbol, start=start_date, end=end_date, index=True) # Added index=True
-            if not df_nse.empty:
-                df_nse = df_nse.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
-                df_nse.index = df_nse.index.date
+            try:
+                df_nse = get_history(symbol=nse_symbol, start=start_date, end=end_date, index=True)
+                if not df_nse.empty:
+                    df_nse = df_nse.resample('W').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'})
+                    df_nse.index = df_nse.index.date
+            except Exception as e:
+                logger.error(f"Error fetching weekly data from nsepy for {symbol}: {e}")
+                df_nse = pd.DataFrame()
         else:
             df_nse = pd.DataFrame()
 
         if not df_nse.empty:
-            # df_nse.rename(columns={'OPEN': 'Open', 'HIGH': 'High', 'LOW': 'Low', 'CLOSE': 'Close', 'VOLUME': 'Volume'}, inplace=True) # Removed
-            df_nse.index = pd.to_datetime(df_nse.index)  # Ensure datetime for consistency
+            df_nse.index = pd.to_datetime(df_nse.index)
             df_nse.index = df_nse.index.tz_localize(None)
             DataCache.save_stock_data(symbol, interval, df_nse, start_date, end_date)
             logger.info(f"Fetched {interval} data for {symbol} from nsepy")
@@ -123,16 +130,20 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
             logger.warning(f"No {interval} data found for {symbol} on nsepy. Falling back to yfinance.")
             # Fallback to yfinance
             ticker = yf.Ticker(symbol)
-            if interval == "1d":
-                df_yf = ticker.history(period=f"{DATA_LOOKBACK_DAYS}d", interval="1d")
-            elif interval == "1wk":
-                df_yf = ticker.history(period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d", interval="1wk")
-            else:
+            try:
+                if interval == "1d":
+                    df_yf = ticker.history(period=f"{DATA_LOOKBACK_DAYS}d", interval="1d")
+                elif interval == "1wk":
+                    df_yf = ticker.history(period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d", interval="1wk")
+                else:
+                    df_yf = pd.DataFrame()
+            except Exception as e:
+                logger.error(f"Error fetching {interval} data for {symbol} from yfinance: {e}")
                 df_yf = pd.DataFrame()
 
             if not df_yf.empty:
                 df_yf = df_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
-                df_yf.index = pd.to_datetime(df_yf.index) # Ensure datetime
+                df_yf.index = pd.to_datetime(df_yf.index)
                 df_yf.index = df_yf.index.tz_localize(None)
                 DataCache.save_stock_data(symbol, interval, df_yf, start_date, end_date)
                 logger.info(f"Fetched {interval} data for {symbol} from yfinance (fallback)")
@@ -142,33 +153,15 @@ def fetch_historical_data(symbol, period="1y", interval="1d"):
                 return pd.DataFrame()
 
     except Exception as e:
-        logger.error(f"Error fetching {interval} data for {symbol}: {e}. Falling back to yfinance.")
-        # Fallback to yfinance in case of any exception with nsepy
-        ticker = yf.Ticker(symbol)
-        if interval == "1d":
-            df_yf = ticker.history(period=f"{DATA_LOOKBACK_DAYS}d", interval="1d")
-        elif interval == "1wk":
-            df_yf = ticker.history(period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d", interval="1wk")
-        else:
-            df_yf = pd.DataFrame()
-
-        if not df_yf.empty:
-            df_yf = df_yf[['Open', 'High', 'Low', 'Close', 'Volume']]
-            df_yf.index = pd.to_datetime(df_yf.index) # Ensure datetime
-            df_yf.index = df_yf.index.tz_localize(None)
-            DataCache.save_stock_data(symbol, interval, df_yf, start_date, end_date)
-            logger.info(f"Fetched {interval} data for {symbol} from yfinance (fallback)")
-            return df_yf
-        else:
-            logger.error(f"Error fetching {interval} data for {symbol} from yfinance (fallback).")
-            return pd.DataFrame()
+        logger.error(f"Error fetching {interval} data for {symbol}: {e}")
+        return pd.DataFrame()
 
 
 def fetch_sector_index_data(sector_index, period="1y"):
     """Fetches historical data for a sector index using yfinance and caches it."""
     today = datetime.now()
     start_date = today - timedelta(days=DATA_LOOKBACK_DAYS)
-    end_date = today.date() # Added to make end_date a date object
+    end_date = today.date()
 
     cached_data = DataCache.get_sector_data(sector_index)
     if cached_data is not None:
@@ -176,8 +169,8 @@ def fetch_sector_index_data(sector_index, period="1y"):
         return cached_data
 
     try:
-        ticker = yf.Ticker(f"^{sector_index}.NS") # Using ^ for Yahoo Finance index tickers
-        df = ticker.history(period=period, interval="1wk") # Using weekly for sector performance
+        ticker = yf.Ticker(f"^{sector_index}.NS")
+        df = ticker.history(period=period, interval="1wk")
         if not df.empty:
             df = df[['Close']]
             df.index = pd.to_datetime(df.index)
@@ -202,13 +195,13 @@ def fetch_all_data():
         all_symbols.extend(nifty_500_symbols)
 
     all_symbols.extend(CUSTOM_SYMBOLS)
-    all_symbols = list(set(all_symbols)) # Remove duplicates
+    all_symbols = list(set(all_symbols))
     all_symbols = [s for s in all_symbols if s not in EXCLUDED_SYMBOLS]
 
     stock_data = {}
     for symbol in tqdm(all_symbols, desc="Fetching stock data"):
         daily_data = fetch_historical_data(symbol, period=f"{DATA_LOOKBACK_DAYS}d", interval="1d")
-        weekly_data = fetch_historical_data(symbol, period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d", interval="1wk") # Adjust period for weekly
+        weekly_data = fetch_historical_data(symbol, period=f"{WEEKLY_LOOKBACK_PERIODS * 7}d", interval="1wk")
         if not daily_data.empty and not weekly_data.empty:
             stock_data[symbol] = {'daily': daily_data, 'weekly': weekly_data}
 
