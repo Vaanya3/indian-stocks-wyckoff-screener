@@ -12,7 +12,5 @@ requests==2.31.0
 python-dotenv==1.0.0
 tqdm==4.66.1
 pytz==2023.3
-beautifulsoup4
-aiohttp
-tqdm
-
+beautifulsoup4==4.12.3
+aiohttp==3.9.3
